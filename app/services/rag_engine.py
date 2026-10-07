@@ -1,4 +1,6 @@
 import time
+import asyncio
+import logging
 import httpx
 from typing import List, Dict, Optional, Tuple
 from app.models.document import Citation, SearchResult
@@ -62,32 +64,66 @@ class RAGEngine:
             f"SOURCE EXCERPTS:\n{context}"
         )
 
+        # 1. Try Anthropic Claude if configured or selected
+        if settings.ANTHROPIC_API_KEY and (settings.DEFAULT_LLM_PROVIDER == "anthropic" or not settings.OPENAI_API_KEY):
+            for attempt in range(1, settings.MAX_API_RETRIES + 1):
+                try:
+                    async with httpx.AsyncClient(timeout=30.0) as client:
+                        resp = await client.post(
+                            "https://api.anthropic.com/v1/messages",
+                            headers={
+                                "x-api-key": settings.ANTHROPIC_API_KEY,
+                                "anthropic-version": "2023-06-01",
+                                "content-type": "application/json"
+                            },
+                            json={
+                                "model": "claude-3-5-sonnet-20241022",
+                                "max_tokens": 600,
+                                "system": system_prompt,
+                                "messages": [{"role": "user", "content": query}],
+                                "temperature": 0.1
+                            }
+                        )
+                        if resp.status_code == 200:
+                            data = resp.json()
+                            content = data["content"][0]["text"].strip()
+                            grounded = cls.FALLBACK_MESSAGE.lower() not in content.lower()
+                            return content, grounded
+                except Exception as exc:
+                    logging.getLogger(__name__).warning("Anthropic Claude attempt %d failed: %s", attempt, str(exc))
+                    if attempt < settings.MAX_API_RETRIES:
+                        await asyncio.sleep(1.0 * attempt)
+
+        # 2. Try OpenAI if configured
         if settings.OPENAI_API_KEY:
-            try:
-                messages = [{"role": "system", "content": system_prompt}]
-                if history:
-                    messages.extend(history[-4:])
-                messages.append({"role": "user", "content": query})
+            for attempt in range(1, settings.MAX_API_RETRIES + 1):
+                try:
+                    messages = [{"role": "system", "content": system_prompt}]
+                    if history:
+                        messages.extend(history[-4:])
+                    messages.append({"role": "user", "content": query})
 
-                async with httpx.AsyncClient(timeout=30.0) as client:
-                    resp = await client.post(
-                        "https://api.openai.com/v1/chat/completions",
-                        headers={"Authorization": f"Bearer {settings.OPENAI_API_KEY}"},
-                        json={
-                            "model": "gpt-4o-mini",
-                            "messages": messages,
-                            "temperature": 0.1,
-                            "max_tokens": 600
-                        }
-                    )
-                    if resp.status_code == 200:
-                        content = resp.json()["choices"][0]["message"]["content"].strip()
-                        grounded = cls.FALLBACK_MESSAGE.lower() not in content.lower()
-                        return content, grounded
-            except Exception as e:
-                print(f"[RAGEngine] External LLM error: {e}")
+                    async with httpx.AsyncClient(timeout=30.0) as client:
+                        resp = await client.post(
+                            "https://api.openai.com/v1/chat/completions",
+                            headers={"Authorization": f"Bearer {settings.OPENAI_API_KEY}"},
+                            json={
+                                "model": "gpt-4o-mini",
+                                "messages": messages,
+                                "temperature": 0.1,
+                                "max_tokens": 600
+                            }
+                        )
+                        if resp.status_code == 200:
+                            content = resp.json()["choices"][0]["message"]["content"].strip()
+                            grounded = cls.FALLBACK_MESSAGE.lower() not in content.lower()
+                            return content, grounded
+                except Exception as exc:
+                    logging.getLogger(__name__).warning("OpenAI API attempt %d failed: %s", attempt, str(exc))
+                    if attempt < settings.MAX_API_RETRIES:
+                        await asyncio.sleep(1.0 * attempt)
 
-        # High-Precision Built-in Grounded Extractive Mode (Zero external dependencies)
+        # 3. High-Precision Built-in Grounded Extractive Mode (Zero external dependencies fallback)
         return cls._extractive_grounded_answer(query, context)
 
     @classmethod

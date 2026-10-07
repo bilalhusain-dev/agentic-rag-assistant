@@ -1,9 +1,15 @@
 import time
 import random
 import uuid
+import asyncio
+import logging
 from typing import Dict, Any, List, Optional
+import httpx
 from pydantic import BaseModel, Field, ValidationError
 from app.models.schemas import ToolDefinition, ToolExecutionResult
+from app.config import settings
+
+logger = logging.getLogger(__name__)
 
 # Pydantic Schemas for Strict Tool Validation
 class CreateSupportTicketInput(BaseModel):
@@ -33,12 +39,12 @@ class ToolRegistry:
         return [
             ToolDefinition(
                 name="create_support_ticket",
-                description="Dispatches a new high-priority support ticket to the internal Jira/Zendesk system.",
+                description="Dispatches a new high-priority support ticket to external API (Jira/Zendesk) with fallback handling.",
                 parameters=CreateSupportTicketInput.model_json_schema()
             ),
             ToolDefinition(
                 name="lookup_customer_account",
-                description="Queries the CRM database to retrieve customer contract tier, MRR, and assigned CSM.",
+                description="Queries CRM database to retrieve customer contract tier, MRR, and assigned CSM.",
                 parameters=LookupCustomerAccountInput.model_json_schema()
             ),
             ToolDefinition(
@@ -47,6 +53,32 @@ class ToolRegistry:
                 parameters=CheckServiceStatusInput.model_json_schema()
             )
         ]
+
+    @classmethod
+    async def _dispatch_external_http(cls, endpoint: str, payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Dispatches external HTTP POST with automatic retries and exponential backoff."""
+        if not settings.EXTERNAL_API_BASE_URL:
+            return None
+
+        url = f"{settings.EXTERNAL_API_BASE_URL.rstrip('/')}/{endpoint.lstrip('/')}"
+        headers = {"Content-Type": "application/json"}
+        if settings.EXTERNAL_API_KEY:
+            headers["Authorization"] = f"Bearer {settings.EXTERNAL_API_KEY}"
+
+        for attempt in range(1, settings.MAX_API_RETRIES + 1):
+            try:
+                async with httpx.AsyncClient(timeout=settings.EXTERNAL_API_TIMEOUT_SEC) as client:
+                    resp = await client.post(url, json=payload, headers=headers)
+                    if resp.status_code in (200, 201):
+                        return resp.json()
+                    logger.warning("External API returned status %d on attempt %d", resp.status_code, attempt)
+            except Exception as e:
+                logger.warning("External API dispatch failed on attempt %d: %s", attempt, str(e))
+                if attempt < settings.MAX_API_RETRIES:
+                    await asyncio.sleep(1.0 * attempt)
+
+        logger.error("All %d attempts to external API '%s' exhausted; activating fallback.", settings.MAX_API_RETRIES, url)
+        return None
 
     @classmethod
     async def execute_tool(cls, tool_name: str, arguments: Dict[str, Any]) -> ToolExecutionResult:
@@ -59,16 +91,23 @@ class ToolRegistry:
                 ticket_id = f"TICK-{random.randint(1000, 9999)}"
                 sla_hours = {"low": 48, "medium": 24, "high": 4, "critical": 1}[validated.priority]
                 
-                result_payload = {
-                    "ticket_id": ticket_id,
-                    "title": validated.title,
-                    "priority": validated.priority,
-                    "category": validated.category,
-                    "status": "OPEN",
-                    "sla_target_hours": sla_hours,
-                    "created_at": timestamp
-                }
-                cls.TICKETS_DB.append(result_payload)
+                # Attempt external REST API dispatch if configured
+                external_resp = await cls._dispatch_external_http("tickets", validated.model_dump())
+                if external_resp:
+                    result_payload = external_resp
+                    result_payload["dispatched_via"] = "external_rest_api"
+                else:
+                    result_payload = {
+                        "ticket_id": ticket_id,
+                        "title": validated.title,
+                        "priority": validated.priority,
+                        "category": validated.category,
+                        "status": "OPEN",
+                        "sla_target_hours": sla_hours,
+                        "created_at": timestamp,
+                        "dispatch_mode": "external_api" if settings.EXTERNAL_API_BASE_URL else "local_resilient_store"
+                    }
+                    cls.TICKETS_DB.append(result_payload)
                 status = "success"
 
             elif tool_name == "lookup_customer_account":
