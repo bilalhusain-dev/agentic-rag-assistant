@@ -26,11 +26,13 @@ class VectorStore:
                 "chunks": {chunk_id: chunk.model_dump() for chunk_id, chunk in self.chunks.items()},
                 "vectors": self.vectors
             }
-            with open(self.storage_file, "w", encoding="utf-8") as f:
+            temp_file = f"{self.storage_file}.tmp"
+            with open(temp_file, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False)
+            os.replace(temp_file, self.storage_file)
         except Exception as e:
             # Non-blocking persistence warning
-            print(f"[VectorStore] Persistence Warning: {e}")
+            logging.getLogger(__name__).warning("VectorStore persistence failed: %s", str(e))
 
     def _load(self):
         if os.path.exists(self.storage_file):

@@ -48,8 +48,17 @@ class DocumentParser:
             if not PYMUPDF_AVAILABLE:
                 raise RuntimeError("PyMuPDF (fitz) is not installed for PDF parsing.")
             
-            doc = fitz.open(stream=file_bytes, filetype="pdf")
-            for page_idx in range(len(doc)):
+            try:
+                doc = fitz.open(stream=file_bytes, filetype="pdf")
+            except Exception as e:
+                raise ValueError(f"Corrupt or encrypted PDF file: {str(e)}")
+
+            if doc.is_encrypted:
+                doc.close()
+                raise ValueError("Password-protected or encrypted PDFs are not supported.")
+
+            max_pages = min(len(doc), 150)
+            for page_idx in range(max_pages):
                 page = doc[page_idx]
                 raw_text = page.get_text("text")
                 cleaned = cls.clean_text(raw_text)

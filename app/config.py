@@ -20,6 +20,13 @@ class Settings(BaseModel):
     SIMILARITY_THRESHOLD: float = 0.35
     TOP_K_RESULTS: int = 4
     
+    # Security & Operational Limits
+    MAX_UPLOAD_SIZE_BYTES: int = 25 * 1024 * 1024  # 25MB max file upload
+    MAX_PDF_PAGES: int = 150                      # DoS mitigation against PDF bombs
+    MAX_SESSION_CACHE: int = 1000                 # Session store eviction limit
+    ALLOWED_EXTENSIONS: list = [".pdf", ".txt", ".md", ".markdown", ".json", ".csv"]
+    ALLOWED_ORIGINS: list = ["*"]
+    
     # Storage
     STORAGE_DIR: str = os.getenv("STORAGE_DIR", "./data_storage")
     VECTOR_INDEX_FILE: str = os.path.join(STORAGE_DIR, "vector_index.json")

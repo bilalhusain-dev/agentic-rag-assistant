@@ -9,12 +9,16 @@ from app.services.vector_store import vector_store
 from app.config import settings
 
 class AgentRouter:
-    # In-memory session dialogue store
+    # In-memory session dialogue store with capacity cap
     SESSIONS: Dict[str, List[Dict[str, str]]] = {}
 
     @classmethod
     def get_session_history(cls, session_id: str) -> List[Dict[str, str]]:
         if session_id not in cls.SESSIONS:
+            if len(cls.SESSIONS) >= settings.MAX_SESSION_CACHE:
+                # Evict oldest session key
+                oldest_key = next(iter(cls.SESSIONS))
+                cls.SESSIONS.pop(oldest_key, None)
             cls.SESSIONS[session_id] = []
         return cls.SESSIONS[session_id]
 
