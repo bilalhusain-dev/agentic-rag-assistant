@@ -1,0 +1,21 @@
+version: '3.8'
+
+services:
+  nexusrag-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: nexusrag-agent
+    ports:
+      - "8000:8000"
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - STORAGE_DIR=/app/data_storage
+    volumes:
+      - nexusrag-data:/app/data_storage
+    restart: unless-stopped
+
+volumes:
+  nexusrag-data:
+    driver: local

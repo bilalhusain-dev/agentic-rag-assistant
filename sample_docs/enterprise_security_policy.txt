@@ -1,0 +1,39 @@
+# NEXUS CORP — ENTERPRISE INFORMATION SECURITY POLICY (EISP-2026)
+Document Reference: SEC-POL-v4.2
+Effective Date: January 1, 2026
+Classification: Internal Confidential
+
+1. ACCESS CONTROL & AUTHENTICATION STANDARDS
+1.1 Password Requirements:
+All user accounts accessing Nexus infrastructure must utilize passwords containing a minimum of 14 characters, combining uppercase letters, lowercase letters, numbers, and special symbols. Passwords expire every 90 days and cannot match the previous 10 passwords.
+
+1.2 Multi-Factor Authentication (MFA):
+MFA is mandatory for all internal employees, contractors, and administrative users across all systems, including email, source control repositories, VPN, and cloud infrastructure. Hardware security keys (FIDO2/WebAuthn) or time-based one-time password (TOTP) apps are authorized. SMS-based MFA is strictly prohibited for privileged roles.
+
+1.3 Session Timeouts:
+Administrative sessions in the Cloud Management Console, Database Portals, and Production Bastion hosts must automatically terminate after 15 minutes of inactivity. Standard web application sessions terminate after 30 minutes of idle time.
+
+2. DATA CLASSIFICATION & ENCRYPTION
+2.1 Classification Tiers:
+- Tier 1 (Public): Marketing materials, public documentation, open source releases.
+- Tier 2 (Internal): General operational documents, engineering design plans, internal communications.
+- Tier 3 (Confidential): Financial projections, employee PII, client agreements.
+- Tier 4 (Restricted): Encryption keys, database master credentials, payment card tokens, sensitive client secrets.
+
+2.2 Encryption at Rest:
+All Tier 2 through Tier 4 data stored within relational databases, object storage buckets (S3), and block storage volumes must be encrypted at rest using AES-256 or ChaCha20-Poly1305 with customer-managed keys (CMK) rotated annually.
+
+2.3 Encryption in Transit:
+All communications across public networks and between internal microservices must enforce TLS 1.3. TLS 1.0 and 1.1 are permanently deprecated and blocked by network firewalls.
+
+3. SECURITY INCIDENT REPORTING & RESPONSE
+3.1 Incident Notification Windows:
+Any suspected security breach, unauthorized credential exposure, or ransomware indicator must be reported to the Nexus Security Operations Center (SOC) at soc@nexuscorp.internal within 30 minutes of discovery.
+
+3.2 Severity Level Classifications:
+- Severity 1 (Critical): Active system compromise, data exfiltration, or total production outage. Root cause analysis (RCA) must be published within 24 hours.
+- Severity 2 (High): Elevated vulnerability with active exploit potential, or degradation of high-security subsystems. Resolution required within 4 hours.
+- Severity 3 (Medium): Non-critical vulnerability or policy violation without known exploit. Remediation window is 7 business days.
+
+4. REMOTE WORK & DEVICE COMPLIANCE
+Company data may only be accessed via corporate-managed endpoints provisioned with CrowdStrike Falcon EDR, full disk encryption (BitLocker / FileVault), and zero-trust network access (ZTNA). Direct split-tunneling without endpoint verification is forbidden.
