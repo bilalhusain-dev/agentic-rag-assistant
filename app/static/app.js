@@ -1,34 +1,44 @@
 /**
- * NexusRAG Web Client
- * Clean Stripe-grade UX for Document Management, Citations & Agent Tools
+ * NexusRAG — Enterprise Assistant Client
+ * ChatGPT / Claude / Stripe caliber UX Controller
  */
 
 const API_BASE = '/api/v1';
-let activeSessionId = 'sess_' + Math.random().toString(36).substring(2, 9);
-let currentCitations = [];
+let activeSessionId = 'sess_' + Math.random().toString(36).substring(2, 10);
+let storedCitations = [];
+let activeExcerptText = '';
 
 // DOM Elements
+const headerEngineMode = document.getElementById('headerEngineMode');
 const dropzone = document.getElementById('dropzone');
+const dropzonePrompt = document.getElementById('dropzonePrompt');
 const fileInput = document.getElementById('fileInput');
-const docList = document.getElementById('docList');
-const docCountBadge = document.getElementById('docCount');
-const chatMessages = document.getElementById('chatMessages');
-const userInput = document.getElementById('userInput');
-const sendBtn = document.getElementById('sendBtn');
-const excerptModal = document.getElementById('excerptModal');
+const docListContainer = document.getElementById('docListContainer');
+const docCountBadge = document.getElementById('docCountBadge');
+const chatScrollArea = document.getElementById('chatScrollArea');
+const chatThread = document.getElementById('chatThread');
+const heroCard = document.getElementById('heroCard');
+const userPromptInput = document.getElementById('userPromptInput');
+const sendPromptBtn = document.getElementById('sendPromptBtn');
+const citationModal = document.getElementById('citationModal');
 const modalDocTitle = document.getElementById('modalDocTitle');
-const modalExcerptBody = document.getElementById('modalExcerptBody');
+const modalDocBody = document.getElementById('modalDocBody');
 
-// Initialization
+// Lifecycle Initialization
 document.addEventListener('DOMContentLoaded', () => {
+  loadTelemetry();
   fetchDocuments();
-  setupEventListeners();
+  initEventListeners();
 });
 
-function setupEventListeners() {
-  // Dropzone click & drag handlers
+function initEventListeners() {
+  // File upload dropzone
   dropzone.addEventListener('click', () => fileInput.click());
-  fileInput.addEventListener('change', handleFileSelect);
+  fileInput.addEventListener('change', (e) => {
+    if (e.target.files && e.target.files[0]) {
+      uploadDocumentFile(e.target.files[0]);
+    }
+  });
 
   dropzone.addEventListener('dragover', (e) => {
     e.preventDefault();
@@ -42,33 +52,98 @@ function setupEventListeners() {
   dropzone.addEventListener('drop', (e) => {
     e.preventDefault();
     dropzone.classList.remove('dragover');
-    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-      uploadFile(e.dataTransfer.files[0]);
+    if (e.dataTransfer.files && e.dataTransfer.files[0]) {
+      uploadDocumentFile(e.dataTransfer.files[0]);
     }
   });
 
-  // Chat input
-  sendBtn.addEventListener('click', sendMessage);
-  userInput.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') {
-      sendMessage();
+  // Prompt input handling
+  sendPromptBtn.addEventListener('click', handleSendMessage);
+  
+  userPromptInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      handleSendMessage();
     }
+  });
+
+  // Auto-grow textarea
+  userPromptInput.addEventListener('input', () => {
+    userPromptInput.style.height = 'auto';
+    userPromptInput.style.height = Math.min(userPromptInput.scrollHeight, 180) + 'px';
   });
 }
 
-function handleFileSelect(e) {
-  if (e.target.files && e.target.files.length > 0) {
-    uploadFile(e.target.files[0]);
+// Telemetry check
+async function loadTelemetry() {
+  try {
+    const res = await fetch(`${API_BASE}/health`);
+    if (res.ok) {
+      const data = await res.json();
+      if (headerEngineMode) {
+        headerEngineMode.textContent = data.embedding_mode || 'Operational';
+      }
+    }
+  } catch (err) {
+    console.warn('Telemetry load failed:', err);
   }
 }
 
-// Upload file to /api/v1/documents/upload
-async function uploadFile(file) {
+// Document Management
+async function fetchDocuments() {
+  try {
+    const res = await fetch(`${API_BASE}/documents`);
+    if (!res.ok) return;
+    const docs = await res.json();
+    renderDocumentList(docs);
+  } catch (err) {
+    console.error('Failed to fetch documents:', err);
+  }
+}
+
+function renderDocumentList(docs) {
+  docCountBadge.textContent = `${docs.length} doc${docs.length === 1 ? '' : 's'}`;
+  docListContainer.innerHTML = '';
+
+  if (docs.length === 0) {
+    docListContainer.innerHTML = `
+      <div style="padding: 24px 12px; text-align: center; color: var(--text-muted); font-size: 12px;">
+        No documents indexed yet.<br>Drop a PDF or Markdown file to begin.
+      </div>
+    `;
+    return;
+  }
+
+  docs.forEach(doc => {
+    const ext = doc.filename.split('.').pop().toLowerCase();
+    let icon = '📄';
+    if (ext === 'pdf') icon = '📕';
+    else if (ext === 'md' || ext === 'markdown') icon = '📝';
+
+    const card = document.createElement('div');
+    card.className = 'doc-card';
+    card.innerHTML = `
+      <div class="doc-meta-info">
+        <span class="doc-type-icon">${icon}</span>
+        <div class="doc-text-wrapper">
+          <div class="doc-name" title="${escapeHtml(doc.filename)}">${escapeHtml(doc.filename)}</div>
+          <div class="doc-details">${doc.total_chunks} chunks • ${formatBytes(doc.file_size_bytes)}</div>
+        </div>
+      </div>
+      <button class="btn-icon-delete" title="Purge document" onclick="deleteDocument('${doc.doc_id}')">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
+      </button>
+    `;
+    docListContainer.appendChild(card);
+  });
+}
+
+async function uploadDocumentFile(file) {
+  const originalPrompt = dropzonePrompt.textContent;
+  dropzonePrompt.textContent = `Indexing ${file.name}...`;
+
   const formData = new FormData();
   formData.append('file', file);
-
-  const prevText = dropzone.querySelector('p').textContent;
-  dropzone.querySelector('p').textContent = `Uploading ${file.name}...`;
 
   try {
     const res = await fetch(`${API_BASE}/documents/upload`, {
@@ -82,110 +157,71 @@ async function uploadFile(file) {
     }
 
     const data = await res.json();
-    appendSystemNotice(`Indexed "${data.filename}" (${data.total_chunks} chunks parsed).`);
+    showToastNotice(`Indexed "${data.filename}" (${data.total_chunks} semantic chunks)`);
     await fetchDocuments();
   } catch (err) {
     alert(`Document upload error: ${err.message}`);
   } finally {
-    dropzone.querySelector('p').textContent = prevText;
+    dropzonePrompt.textContent = originalPrompt;
     fileInput.value = '';
   }
 }
 
-// Fetch indexed documents
-async function fetchDocuments() {
-  try {
-    const res = await fetch(`${API_BASE}/documents`);
-    if (!res.ok) return;
-    const docs = await res.json();
-    renderDocumentList(docs);
-  } catch (err) {
-    console.error('Failed to load documents:', err);
-  }
-}
-
-function renderDocumentList(docs) {
-  docCountBadge.textContent = docs.length;
-  docList.innerHTML = '';
-
-  if (docs.length === 0) {
-    docList.innerHTML = `
-      <div style="padding: 24px 16px; text-align: center; color: var(--text-muted); font-size: 13px;">
-        No documents indexed yet. Upload a PDF, TXT, or MD file to enable grounded RAG.
-      </div>
-    `;
-    return;
-  }
-
-  docs.forEach(doc => {
-    const card = document.createElement('div');
-    card.className = 'doc-card';
-    card.innerHTML = `
-      <div class="doc-info">
-        <div class="doc-name" title="${doc.filename}">${doc.filename}</div>
-        <div class="doc-meta">
-          <span>${doc.total_chunks} chunks</span> • 
-          <span>${formatBytes(doc.file_size_bytes)}</span>
-        </div>
-      </div>
-      <button class="btn-delete" title="Delete document" onclick="deleteDocument('${doc.doc_id}')">✕</button>
-    `;
-    docList.appendChild(card);
-  });
-}
-
-// Delete document
 async function deleteDocument(docId) {
-  if (!confirm('Remove this document and purge its vector embeddings?')) return;
+  if (!confirm('Permanently purge this document and all indexed vectors?')) return;
   try {
-    const res = await fetch(`${API_BASE}/documents/${docId}`, {
-      method: 'DELETE'
-    });
+    const res = await fetch(`${API_BASE}/documents/${docId}`, { method: 'DELETE' });
     if (res.ok) {
       fetchDocuments();
     }
   } catch (err) {
-    alert('Failed to delete document: ' + err.message);
+    alert('Deletion failed: ' + err.message);
   }
 }
 
-// Send chat message
-async function sendMessage() {
-  const text = userInput.value.trim();
-  if (!text) return;
+// Chat & Agent Interaction
+async function handleSendMessage() {
+  const query = userPromptInput.value.trim();
+  if (!query) return;
 
-  // Append user message
-  appendUserMessage(text);
-  userInput.value = '';
-  userInput.focus();
+  // Hide hero card on first message
+  if (heroCard && heroCard.style.display !== 'none') {
+    heroCard.style.display = 'none';
+  }
 
-  // Loading indicator
-  const loadingRow = appendAssistantLoading();
+  // Append user bubble
+  appendUserMessage(query);
+  userPromptInput.value = '';
+  userPromptInput.style.height = 'auto';
+  userPromptInput.focus();
+
+  // Loading skeleton
+  const loadingElement = appendLoadingIndicator();
 
   try {
     const res = await fetch(`${API_BASE}/chat`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        message: text,
+        message: query,
         session_id: activeSessionId,
         enable_agent: true,
         top_k: 4
       })
     });
 
-    loadingRow.remove();
+    loadingElement.remove();
 
     if (!res.ok) {
       const err = await res.json();
-      throw new Error(err.detail || 'Assistant query failed');
+      throw new Error(err.detail || 'Query execution error');
     }
 
     const data = await res.json();
-    appendAssistantResponse(data);
+    appendAssistantMessage(data);
   } catch (err) {
-    if (loadingRow) loadingRow.remove();
-    appendAssistantError(`Request failed: ${err.message}`);
+    if (loadingElement) loadingElement.remove();
+    appendErrorMessage(`Request Error: ${err.message}`);
   }
 }
 
@@ -193,147 +229,187 @@ function appendUserMessage(text) {
   const row = document.createElement('div');
   row.className = 'msg-row user';
   row.innerHTML = `<div class="msg-user-bubble">${escapeHtml(text)}</div>`;
-  chatMessages.appendChild(row);
+  chatThread.appendChild(row);
   scrollToBottom();
 }
 
-function appendAssistantLoading() {
+function appendLoadingIndicator() {
   const row = document.createElement('div');
-  row.className = 'msg-row';
+  row.className = 'msg-row assistant';
   row.innerHTML = `
-    <div class="msg-assistant-card" style="padding: 12px 18px; color: var(--text-muted); font-size: 13px;">
-      Searching knowledge index & evaluating intent...
+    <div class="assistant-card" style="padding: 14px 18px; color: var(--text-muted); font-size: 13px; display: flex; align-items: center; gap: 8px;">
+      <span class="pulse-dot"></span>
+      Searching vector index & evaluating agent intent...
     </div>
   `;
-  chatMessages.appendChild(row);
+  chatThread.appendChild(row);
   scrollToBottom();
   return row;
 }
 
-function appendAssistantResponse(data) {
+function appendAssistantMessage(data) {
   const row = document.createElement('div');
-  row.className = 'msg-row';
+  row.className = 'msg-row assistant';
 
-  // Determine tag style
-  let tagClass = 'tag-retrieval';
-  let tagLabel = 'RAG Retrieval';
+  let modeClass = 'mode-retrieval';
+  let modeLabel = 'RAG Retrieval';
+  let modeIcon = '🔍';
+
   if (data.mode_used === 'ACTION') {
-    tagClass = 'tag-action';
-    tagLabel = 'Agent Action';
+    modeClass = 'mode-action';
+    modeLabel = 'Agent Action';
+    modeIcon = '⚡';
   } else if (data.mode_used === 'CONVERSATIONAL') {
-    tagClass = 'tag-conversational';
-    tagLabel = 'Conversation';
+    modeClass = 'mode-conversational';
+    modeLabel = 'Conversational';
+    modeIcon = '💬';
   }
 
-  // Citations store for modal lookup
-  const citationStoreIndex = currentCitations.length;
-  currentCitations.push(data.citations || []);
+  // Citations mapping
+  const citationBatchIdx = storedCitations.length;
+  storedCitations.push(data.citations || []);
 
   let citationsHtml = '';
   if (data.citations && data.citations.length > 0) {
     citationsHtml = `
-      <div class="citations-container">
-        <div class="citations-label">Source Citations (${data.citations.length})</div>
-        <div class="citation-pills">
+      <div class="citations-panel">
+        <div class="citations-header-title">
+          <span>📚 Verified Citations (${data.citations.length})</span>
+        </div>
+        <div class="citations-pill-row">
           ${data.citations.map((c, i) => `
-            <span class="citation-pill" onclick="openExcerptModal(${citationStoreIndex}, ${i})">
-              📄 ${escapeHtml(c.filename)} (Score: ${Math.round(c.score * 100)}%)
-            </span>
+            <button class="citation-btn-pill" onclick="openCitationExcerpt(${citationBatchIdx}, ${i})">
+              <span>📄 ${escapeHtml(c.filename)} (p. ${c.page_number || 1})</span>
+              <span class="citation-score-badge">${Math.round(c.score * 100)}%</span>
+            </button>
           `).join('')}
         </div>
       </div>
     `;
   }
 
-  let toolCardHtml = '';
+  // Tool Call Banner
+  let toolBannerHtml = '';
   const executedTool = data.tool_executions && data.tool_executions.length > 0 ? data.tool_executions[0] : null;
   if (executedTool) {
-    const t = executedTool;
-    const isSuccess = t.status === 'success';
-    toolCardHtml = `
-      <div class="tool-call-card">
-        <div class="tool-call-header">
-          <span class="tool-name">⚡ Tool Executed: ${escapeHtml(t.tool_name)}</span>
-          <span style="font-size: 11px; font-weight: 600; color: ${isSuccess ? 'var(--success-green)' : '#dc2626'}">
-            ${t.status.toUpperCase()}
-          </span>
+    toolBannerHtml = `
+      <div class="tool-call-banner">
+        <div class="tool-banner-header">
+          <div class="tool-banner-title">
+            <span>⚡ Action Executed:</span>
+            <span>${escapeHtml(executedTool.tool_name)}</span>
+          </div>
+          <span class="tool-banner-badge">${executedTool.status.toUpperCase()}</span>
         </div>
-        <pre class="tool-receipt">${escapeHtml(JSON.stringify(t.result, null, 2))}</pre>
+        <pre class="tool-payload-content">${escapeHtml(JSON.stringify(executedTool.result, null, 2))}</pre>
       </div>
     `;
   }
 
   row.innerHTML = `
-    <div class="msg-assistant-card">
-      <div class="msg-header">
-        <span class="msg-mode-tag ${tagClass}">${tagLabel}</span>
-        <span style="font-size: 11px; color: var(--text-muted); font-family: 'JetBrains Mono', monospace;">
-          ${data.processing_time_ms ? `${data.processing_time_ms}ms` : ''}
-        </span>
+    <div class="assistant-card">
+      <div class="assistant-header">
+        <div class="assistant-mode-pill ${modeClass}">
+          <span>${modeIcon}</span>
+          <span>${modeLabel}</span>
+        </div>
+        <span class="assistant-meta-time">${data.processing_time_ms ? `${data.processing_time_ms}ms` : ''}</span>
       </div>
-      <div class="msg-body">${formatMessageBody(data.answer)}</div>
-      ${toolCardHtml}
+      <div class="assistant-body">${formatMarkdownBody(data.answer)}</div>
+      ${toolBannerHtml}
       ${citationsHtml}
+      <div class="card-actions-bar">
+        <button class="btn-action-copy" onclick="copyCardContent(this, \`${escapeJsString(data.answer)}\`)">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+          Copy Answer
+        </button>
+      </div>
     </div>
   `;
 
-  chatMessages.appendChild(row);
+  chatThread.appendChild(row);
   scrollToBottom();
 }
 
-function appendAssistantError(msg) {
+function appendErrorMessage(msg) {
   const row = document.createElement('div');
-  row.className = 'msg-row';
+  row.className = 'msg-row assistant';
   row.innerHTML = `
-    <div class="msg-assistant-card" style="border-left: 3px solid #dc2626;">
-      <div class="msg-body" style="color: #b91c1c;">${escapeHtml(msg)}</div>
+    <div class="assistant-card" style="border-left: 3px solid #ef4444;">
+      <div style="color: #b91c1c; font-size: 13.5px; font-weight: 500;">${escapeHtml(msg)}</div>
     </div>
   `;
-  chatMessages.appendChild(row);
+  chatThread.appendChild(row);
   scrollToBottom();
 }
 
-function appendSystemNotice(text) {
-  const row = document.createElement('div');
-  row.className = 'msg-row';
-  row.innerHTML = `
-    <div style="font-size: 12px; color: var(--text-muted); background: #f1f5f9; padding: 6px 12px; border-radius: 6px; margin: 4px auto;">
-      ℹ️ ${escapeHtml(text)}
-    </div>
+function showToastNotice(text) {
+  const notice = document.createElement('div');
+  notice.style.cssText = `
+    position: fixed;
+    bottom: 90px;
+    right: 24px;
+    background: #0f172a;
+    color: #ffffff;
+    font-size: 12px;
+    font-weight: 500;
+    padding: 8px 14px;
+    border-radius: 8px;
+    box-shadow: var(--shadow-float);
+    z-index: 50;
+    animation: fadeIn 0.15s ease-out;
   `;
-  chatMessages.appendChild(row);
-  scrollToBottom();
+  notice.textContent = `✓ ${text}`;
+  document.body.appendChild(notice);
+  setTimeout(() => notice.remove(), 3200);
 }
 
 // Modal Handlers
-function openExcerptModal(batchIdx, citationIdx) {
-  const citation = currentCitations[batchIdx]?.[citationIdx];
+function openCitationExcerpt(batchIdx, citIdx) {
+  const citation = storedCitations[batchIdx]?.[citIdx];
   if (!citation) return;
 
-  modalDocTitle.textContent = `${citation.filename} (Page ${citation.page_number || 1})`;
-  modalExcerptBody.textContent = citation.excerpt;
-  excerptModal.classList.add('active');
+  activeExcerptText = citation.excerpt;
+  modalDocTitle.textContent = `${citation.filename} (Page ${citation.page_number || 1}) • Match ${Math.round(citation.score * 100)}%`;
+  modalDocBody.textContent = citation.excerpt;
+  citationModal.classList.add('active');
 }
 
-function hideModal() {
-  excerptModal.classList.remove('active');
+function hideCitationModal() {
+  citationModal.classList.remove('active');
 }
 
-function closeModal(event) {
-  if (event.target === excerptModal) {
-    hideModal();
+function closeModalOnBackdrop(e) {
+  if (e.target === citationModal) {
+    hideCitationModal();
   }
 }
 
-// Quick Prompt Fill
-function fillPrompt(text) {
-  userInput.value = text;
-  userInput.focus();
+function copyCitationSnippet() {
+  if (!activeExcerptText) return;
+  navigator.clipboard.writeText(activeExcerptText).then(() => {
+    alert('Citation excerpt copied to clipboard!');
+  });
 }
 
-// Utility Helpers
+function copyCardContent(btn, text) {
+  navigator.clipboard.writeText(text).then(() => {
+    const originalText = btn.innerHTML;
+    btn.innerHTML = '✓ Copied!';
+    setTimeout(() => { btn.innerHTML = originalText; }, 1800);
+  });
+}
+
+// Prompt Suggestion Selector
+function selectPrompt(promptText) {
+  userPromptInput.value = promptText;
+  userPromptInput.focus();
+  handleSendMessage();
+}
+
+// Helpers
 function scrollToBottom() {
-  chatMessages.scrollTop = chatMessages.scrollHeight;
+  chatScrollArea.scrollTop = chatScrollArea.scrollHeight;
 }
 
 function formatBytes(bytes) {
@@ -354,11 +430,29 @@ function escapeHtml(str) {
     .replace(/'/g, '&#039;');
 }
 
-function formatMessageBody(text) {
+function escapeJsString(str) {
+  if (!str) return '';
+  return String(str).replace(/\\/g, '\\\\').replace(/`/g, '\\`').replace(/\$/g, '\\$');
+}
+
+function formatMarkdownBody(text) {
   if (!text) return '';
-  // Basic markdown formatting: bold and newlines
   let formatted = escapeHtml(text);
+  
+  // Bold
   formatted = formatted.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+  
+  // Bullet lists
+  formatted = formatted.replace(/^\* (.*$)/gim, '<li>$1</li>');
+  formatted = formatted.replace(/^- (.*$)/gim, '<li>$1</li>');
+  formatted = formatted.replace(/(<li>.*<\/li>)/gim, '<ul>$1</ul>');
+  
+  // Code snippets
+  formatted = formatted.replace(/`([^`]+)`/g, '<code style="background: #f1f5f9; padding: 2px 6px; border-radius: 4px; font-family: monospace; font-size: 12px; color: #0f172a;">$1</code>');
+  
+  // Paragraphs / line breaks
+  formatted = formatted.replace(/\n\n/g, '<br><br>');
   formatted = formatted.replace(/\n/g, '<br>');
+  
   return formatted;
 }
